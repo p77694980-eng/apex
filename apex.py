@@ -14,7 +14,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # CONFIGURATION
 # ==========================================
 TELEGRAM_BOT_TOKEN = "8798349889:AAFIhfwSs9qbD8BlU9zrq20Y3BHfbPlxJII"
-AUTHORIZED_USER_ID = 8798349889
+AUTHORIZED_USER_ID = 6117925342
 FRED_API_KEY = "6866b9232de4f451a032868ebf67f783"
 
 STATE = {
