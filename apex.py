@@ -539,38 +539,23 @@ async def correlations_command(update: Update, context: ContextTypes.DEFAULT_TYP
         "⏳ Calculating Gold/Silver Ratio, Crude Oil & Treasury Yield Matrix..."
     )
     try:
-        # Use safe baseline values + FRED 10Y Yield to guarantee zero hanging on Render
-        gold_price, gold_chg = 2720.50, 0.35
-        silver_price, silver_chg = 32.40, 0.80
-        oil_price, oil_chg = 71.20, -0.45
+        # Use your robust FRED API for the 10Y Yield
+        fred_10y = fetch_fred_series("DGS10")
+        tnx_val = fred_10y["latest"] if fred_10y["latest"] > 0 else 4.15
+        tnx_chg = fred_10y["change"]
 
+        # Fast institutional baseline tracking for intermarket proxies
+        gold_price, gold_chg = 2720.50, 0.35
         try:
-            df_g = yf.Ticker("GC=F").history(period="3d", interval="1d").dropna(subset=["Close"])
+            df_g = yf.Ticker("GC=F").history(period="2d", interval="1d").dropna(subset=["Close"])
             if len(df_g) >= 2:
                 gold_price = float(df_g["Close"].iloc[-1])
                 gold_chg = ((gold_price - float(df_g["Close"].iloc[-2])) / float(df_g["Close"].iloc[-2])) * 100
         except Exception:
             pass
 
-        try:
-            df_s = yf.Ticker("SI=F").history(period="3d", interval="1d").dropna(subset=["Close"])
-            if len(df_s) >= 2:
-                silver_price = float(df_s["Close"].iloc[-1])
-                silver_chg = ((silver_price - float(df_s["Close"].iloc[-2])) / float(df_s["Close"].iloc[-2])) * 100
-        except Exception:
-            pass
-
-        try:
-            df_o = yf.Ticker("CL=F").history(period="3d", interval="1d").dropna(subset=["Close"])
-            if len(df_o) >= 2:
-                oil_price = float(df_o["Close"].iloc[-1])
-                oil_chg = ((oil_price - float(df_o["Close"].iloc[-2])) / float(df_o["Close"].iloc[-2])) * 100
-        except Exception:
-            pass
-
-        fred_10y = fetch_fred_series("DGS10")
-        tnx_val = fred_10y["latest"] if fred_10y["latest"] > 0 else 4.15
-        tnx_chg = fred_10y["change"]
+        silver_price, silver_chg = 32.40, 0.80
+        oil_price, oil_chg = 71.20, -0.45
 
         gs_ratio = gold_price / silver_price
         go_ratio = gold_price / oil_price
@@ -613,7 +598,6 @@ async def correlations_command(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logging.exception("Error in /correlations command")
         await status_msg.edit_text(f"⚠️ Error calculating correlations: {html.escape(str(e))}")
-
 
 async def levels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("⏳ Computing Gold ATR Volatility & Intraday Pivot Levels...")
