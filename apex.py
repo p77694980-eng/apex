@@ -444,5 +444,264 @@ def main():
     app.run_polling(drop_pending_updates=True)
 
 
+# if __name__ == "__main__":
+#     main()
+# ==========================================
+# 6. NEWS, SENTIMENT, CORRELATIONS & LEVELS EXTENSION
+# ==========================================
+import time
+import html
+import xml.etree.ElementTree as ET
+
+NEWS_FEEDS = {
+    "🟡 GOLD (XAU)": "https://news.google.com/rss/search?q=gold+price+OR+XAUUSD+OR+bullion+when:1d&hl=en-US&gl=US&ceid=US:en",
+    "⚪ SILVER (XAG)": "https://news.google.com/rss/search?q=silver+price+OR+XAGUSD+OR+silver+market+when:1d&hl=en-US&gl=US&ceid=US:en",
+    "📈 BOND YIELDS": "https://news.google.com/rss/search?q=treasury+yields+OR+bond+market+yield+OR+10-year+yield+when:1d&hl=en-US&gl=US&ceid=US:en",
+    "🛢 CRUDE OIL (WTI/BRENT)": "https://news.google.com/rss/search?q=crude+oil+price+OR+WTI+crude+OR+Brent+oil+when:1d&hl=en-US&gl=US&ceid=US:en"
+}
+
+SEEN_NEWS_LINKS = set()
+
+BULLISH_WORDS = ["surge", "soar", "jump", "rally", "record high", "gain", "bull", "safe-haven", "rate cut", "buying", "climb", "rise"]
+BEARISH_WORDS = ["drop", "fall", "plunge", "slump", "slide", "hawkish", "sell-off", "selloff", "loss", "bear", "retreat", "dip", "pressure"]
+
+
+def analyze_headline_sentiment(title: str) -> str:
+    lower_t = title.lower()
+    bull_hits = sum(1 for w in BULLISH_WORDS if w in lower_t)
+    bear_hits = sum(1 for w in BEARISH_WORDS if w in lower_t)
+    if bull_hits > bear_hits:
+        return "🟢"
+    elif bear_hits > bull_hits:
+        return "🔴"
+    return "⚪"
+
+
+def fetch_rss_items(url: str, limit: int = 3):
+    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+    items = []
+    try:
+        resp = requests.get(url, headers=headers, timeout=12)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+        for item in root.findall("./channel/item")[:limit]:
+            raw_title = item.findtext("title") or "No Title"
+            link = item.findtext("link") or ""
+            pub_date = item.findtext("pubDate") or ""
+            short_date = " ".join(pub_date.split()[:4]) if pub_date else ""
+            sentiment_icon = analyze_headline_sentiment(raw_title)
+            items.append({
+                "title": html.escape(raw_title),
+                "link": html.escape(link),
+                "date": html.escape(short_date),
+                "sentiment": sentiment_icon
+            })
+    except Exception as e:
+        logging.error(f"RSS error for {url}: {e}")
+    return items
+
+
+async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text(
+        "⏳ Scanning live institutional headlines & sentiment for Gold, Silver, Yields & Crude Oil..."
+    )
+    try:
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        sections = [
+            f"<b>📰 MACRO & COMMODITIES NEWS WIRE</b>\n<i>{now_str}</i>\n"
+            f"<i>Legend: 🟢 Bullish | 🔴 Bearish | ⚪ Neutral</i>\n━━━━━━━━━━━━━━━━━━━━━━"
+        ]
+
+        for category, url in NEWS_FEEDS.items():
+            headlines = fetch_rss_items(url, limit=3)
+            sec_lines = [f"\n<b>{category}</b>"]
+            if not headlines:
+                sec_lines.append("• <i>No recent headlines found.</i>")
+            else:
+                for h in headlines:
+                    date_str = f" <i>({h['date']})</i>" if h["date"] else ""
+                    sec_lines.append(f"{h['sentiment']} <a href=\"{h['link']}\">{h['title']}</a>{date_str}")
+            sections.append("\n".join(sec_lines))
+
+        sections.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+        await status_msg.edit_text(
+            "\n".join(sections),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        logging.exception("Error in /news command")
+        await status_msg.edit_text(f"⚠️ Error fetching news: {e}")
+
+
+async def correlations_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text(
+        "⏳ Calculating Gold/Silver Ratio, Crude Oil Inflation Pulse & Treasury Yield Matrix..."
+    )
+    try:
+        symbols = {
+            "gold": "GC=F",
+            "silver": "SI=F",
+            "oil": "CL=F",
+            "tnx": "^TNX"
+        }
+        mkt = {}
+        for k, sym in symbols.items():
+            df = yf.Ticker(sym).history(period="1mo", interval="1d")
+            if df.empty or len(df) < 2:
+                raise ValueError(f"Missing data for {sym}")
+            last = float(df["Close"].iloc[-1])
+            prev = float(df["Close"].iloc[-2])
+            chg = ((last - prev) / prev) * 100
+            mkt[k] = {"price": last, "chg": chg}
+
+        gs_ratio = mkt["gold"]["price"] / mkt["silver"]["price"]
+        go_ratio = mkt["gold"]["price"] / mkt["oil"]["price"]
+
+        if gs_ratio > 85:
+            gs_note = "Silver Historically Undervalued vs. Gold (High Ratio)"
+        elif gs_ratio < 70:
+            gs_note = "Silver Outperforming (Industrial / Precious Expansion)"
+        else:
+            gs_note = "Balanced Historical Range (70–85)"
+
+        if mkt["oil"]["chg"] > 1.0 and mkt["tnx"]["chg"] > 0.5:
+            macro_pulse = "⚠️ Energy-Driven Yield Spike (Inflationary Headwind)"
+        elif mkt["oil"]["chg"] > 0.5 and mkt["tnx"]["chg"] <= 0:
+            macro_pulse = "🔥 Stagflation / Commodity Bid (Strong Gold Tailwind)"
+        elif mkt["tnx"]["chg"] < -0.5:
+            macro_pulse = "🟢 Yields Cooling (Bullish Duration & Bullion)"
+        else:
+            macro_pulse = "⚖️ Mixed Intermarket Flows"
+
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        report = (
+            f"<b>🌐 INTERMARKET & COMMODITIES RADAR</b>\n"
+            f"<i>{now_str}</i>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>1. LIVE ASSET SNAPSHOT</b>\n"
+            f"• <b>Gold (GC=F):</b> ${mkt['gold']['price']:,.2f} ({mkt['gold']['chg']:+.2f}%)\n"
+            f"• <b>Silver (SI=F):</b> ${mkt['silver']['price']:,.2f} ({mkt['silver']['chg']:+.2f}%)\n"
+            f"• <b>WTI Crude Oil (CL=F):</b> ${mkt['oil']['price']:,.2f} ({mkt['oil']['chg']:+.2f}%)\n"
+            f"• <b>US 10Y Yield (^TNX):</b> {mkt['tnx']['price']:.2f}% ({mkt['tnx']['chg']:+.2f}%)\n\n"
+            f"<b>2. INSTITUTIONAL RATIOS</b>\n"
+            f"• <b>Gold/Silver Ratio (XAU/XAG):</b> {gs_ratio:.2f}x\n"
+            f"  <i>→ {gs_note}</i>\n"
+            f"• <b>Gold/Oil Ratio:</b> {go_ratio:.1f} barrels/oz\n\n"
+            f"<b>3. CROSS-ASSET REGIME</b>\n"
+            f"• {macro_pulse}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        await status_msg.edit_text(report, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logging.exception("Error in /correlations command")
+        await status_msg.edit_text(f"⚠️ Error calculating correlations: {e}")
+
+
+async def levels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text("⏳ Computing Gold ATR Volatility & Intraday Pivot Levels...")
+    try:
+        df = yf.Ticker("GC=F").history(period="1mo", interval="1d")
+        if df.empty or len(df) < 15:
+            raise ValueError("Insufficient historical bars for GC=F")
+
+        # Calculate 14-day ATR
+        high_low = df["High"] - df["Low"]
+        high_close = (df["High"] - df["Close"].shift()).abs()
+        low_close = (df["Low"] - df["Close"].shift()).abs()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        atr_14 = float(tr.rolling(14).mean().iloc[-1])
+
+        # Previous session HLC for Standard Floor Pivots
+        prev_bar = df.iloc[-2]
+        h = float(prev_bar["High"])
+        l = float(prev_bar["Low"])
+        c = float(prev_bar["Close"])
+        curr_price = float(df["Close"].iloc[-1])
+
+        pivot = (h + l + c) / 3.0
+        r1 = (2 * pivot) - l
+        s1 = (2 * pivot) - h
+        r2 = pivot + (h - l)
+        s2 = pivot - (h - l)
+
+        atr_upper = curr_price + atr_14
+        atr_lower = curr_price - atr_14
+
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        report = (
+            f"<b>🎯 XAU/USD INTRADAY PIVOTS & ATR MATRIX</b>\n"
+            f"<i>{now_str} | Spot Ref: ${curr_price:,.2f}</i>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>1. STANDARD FLOOR PIVOTS</b>\n"
+            f"• <b>Resistance 2 (R2):</b> ${r2:,.2f}\n"
+            f"• <b>Resistance 1 (R1):</b> ${r1:,.2f}\n"
+            f"• <b>Central Pivot (P):</b> <b>${pivot:,.2f}</b>\n"
+            f"• <b>Support 1 (S1):</b> ${s1:,.2f}\n"
+            f"• <b>Support 2 (S2):</b> ${s2:,.2f}\n\n"
+            f"<b>2. 14-DAY ATR VOLATILITY BAND</b>\n"
+            f"• <b>Daily ATR (14):</b> ±${atr_14:,.2f}\n"
+            f"• <b>Upper Exhaustion (+1 ATR):</b> ${atr_upper:,.2f}\n"
+            f"• <b>Lower Exhaustion (-1 ATR):</b> ${atr_lower:,.2f}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        await status_msg.edit_text(report, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logging.exception("Error in /levels command")
+        await status_msg.edit_text(f"⚠️ Error computing levels: {e}")
+
+
+def auto_news_alert_worker():
+    """Background thread that checks for breaking news every 30 minutes and sends alerts."""
+    for url in NEWS_FEEDS.values():
+        for item in fetch_rss_items(url, limit=5):
+            if item["link"]:
+                SEEN_NEWS_LINKS.add(item["link"])
+
+    while True:
+        time.sleep(1800)
+        for category, url in NEWS_FEEDS.items():
+            latest_items = fetch_rss_items(url, limit=2)
+            for item in latest_items:
+                if item["link"] and item["link"] not in SEEN_NEWS_LINKS:
+                    SEEN_NEWS_LINKS.add(item["link"])
+                    msg = (
+                        f"🚨 <b>BREAKING {category} ALERT</b>\n\n"
+                        f"{item['sentiment']} <a href=\"{item['link']}\">{item['title']}</a>\n"
+                        f"<i>{item['date']}</i>"
+                    )
+                    try:
+                        requests.post(
+                            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                            json={
+                                "chat_id": AUTHORIZED_USER_ID,
+                                "text": msg,
+                                "parse_mode": "HTML",
+                                "disable_web_page_preview": True
+                            },
+                            timeout=10
+                        )
+                    except Exception as e:
+                        logging.error(f"Failed to send auto news alert: {e}")
+
+
+# Hook all new commands into the bot without altering original code above
+_original_builder_build = Application.builder
+
+def _patched_builder():
+    builder = _original_builder_build()
+    orig_build = builder.build
+    def _build_with_extensions():
+        app = orig_build()
+        app.add_handler(CommandHandler("news", news_command))
+        app.add_handler(CommandHandler("correlations", correlations_command))
+        app.add_handler(CommandHandler("levels", levels_command))
+        return app
+    builder.build = _build_with_extensions
+    return builder
+
+Application.builder = staticmethod(_patched_builder)
+
 if __name__ == "__main__":
+    threading.Thread(target=auto_news_alert_worker, daemon=True).start()
     main()
