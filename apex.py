@@ -685,22 +685,16 @@ def auto_news_alert_worker():
                         logging.error(f"Failed to send auto news alert: {e}")
 
 
-# Hook all new commands into the bot without altering original code above
-_original_builder_build = Application.builder
+# Hook all new commands into the bot via run_polling (avoids __slots__ AttributeError)
+_original_run_polling = Application.run_polling
 
-def _patched_builder():
-    builder = _original_builder_build()
-    orig_build = builder.build
-    def _build_with_extensions():
-        app = orig_build()
-        app.add_handler(CommandHandler("news", news_command))
-        app.add_handler(CommandHandler("correlations", correlations_command))
-        app.add_handler(CommandHandler("levels", levels_command))
-        return app
-    builder.build = _build_with_extensions
-    return builder
+def _patched_run_polling(self, *args, **kwargs):
+    self.add_handler(CommandHandler("news", news_command))
+    self.add_handler(CommandHandler("correlations", correlations_command))
+    self.add_handler(CommandHandler("levels", levels_command))
+    return _original_run_polling(self, *args, **kwargs)
 
-Application.builder = staticmethod(_patched_builder)
+Application.run_polling = _patched_run_polling
 
 if __name__ == "__main__":
     threading.Thread(target=auto_news_alert_worker, daemon=True).start()
