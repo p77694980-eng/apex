@@ -534,62 +534,69 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"⚠️ Error fetching news: {e}")
 
 
-def _sync_fetch_correlations():
-    symbols = {
-        "gold": "GC=F",
-        "silver": "SI=F",
-        "oil": "CL=F"
-    }
-    mkt = {}
-    # Preset institutional baselines so it never hangs if Yahoo rate-limits
-    fallbacks = {
-        "gold": {"price": 2720.50, "chg": 0.35},
-        "silver": {"price": 32.40, "chg": 0.80},
-        "oil": {"price": 71.20, "chg": -0.45}
-    }
-
-    for k, sym in symbols.items():
-        try:
-            df = yf.Ticker(sym).history(period="3d", interval="1d")
-            df = df.dropna(subset=["Close"])
-            if not df.empty and len(df) >= 2:
-                last = float(df["Close"].iloc[-1])
-                prev = float(df["Close"].iloc[-2])
-                chg = ((last - prev) / prev) * 100
-                mkt[k] = {"price": last, "chg": chg}
-            else:
-                mkt[k] = fallbacks[k]
-        except Exception as e:
-            logging.warning(f"Fast fallback triggered for {sym}: {e}")
-            mkt[k] = fallbacks[k]
-
-    # Fetch 10Y Yield safely from FRED API
+async def correlations_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text(
+        "⏳ Calculating Gold/Silver Ratio, Crude Oil Inflation Pulse & Treasury Yield Matrix..."
+    )
     try:
-        fred_10y = fetch_fred_series("DGS10")
-        if fred_10y["latest"] > 0:
-            mkt["tnx"] = {"price": fred_10y["latest"], "chg": fred_10y["change"]}
-        else:
-            mkt["tnx"] = {"price": 4.15, "chg": 0.0}
-    except Exception:
-        mkt["tnx"] = {"price": 4.15, "chg": 0.0}
+        mkt = await asyncio.to_thread(_sync_fetch_correlations)
 
-    return mkt
+        gs_ratio = mkt["gold"]["price"] / mkt["silver"]["price"]
+        go_ratio = mkt["gold"]["price"] / mkt["oil"]["price"]
+
+        if gs_ratio > 85:
+            gs_note = "Silver Historically Undervalued vs. Gold (High Ratio)"
+        elif gs_ratio < 70:
+            gs_note = "Silver Outperforming (Industrial / Precious Expansion)"
+        else:
+            gs_note = "Balanced Historical Range (70–85)"
+
+        if mkt["oil"]["chg"] > 1.0 and mkt["tnx"]["chg"] > 0.02:
+            macro_pulse = "⚠️ Energy-Driven Yield Spike (Inflationary Headwind)"
+        elif mkt["oil"]["chg"] > 0.5 and mkt["tnx"]["chg"] <= 0:
+            macro_pulse = "🔥 Stagflation / Commodity Bid (Strong Gold Tailwind)"
+        elif mkt["tnx"]["chg"] < -0.02:
+            macro_pulse = "🟢 Yields Cooling (Bullish Duration & Bullion)"
+        else:
+            macro_pulse = "⚖️ Mixed Intermarket Flows"
+
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        report = (
+            f"<b>🌐 INTERMARKET & COMMODITIES RADAR</b>\n"
+            f"<i>{now_str}</i>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>1. LIVE ASSET SNAPSHOT</b>\n"
+            f"• <b>Gold (GC=F):</b> ${mkt['gold']['price']:,.2f} ({mkt['gold']['chg']:+.2f}%)\n"
+            f"• <b>Silver (SI=F):</b> ${mkt['silver']['price']:,.2f} ({mkt['silver']['chg']:+.2f}%)\n"
+            f"• <b>WTI Crude Oil (CL=F):</b> ${mkt['oil']['price']:,.2f} ({mkt['oil']['chg']:+.2f}%)\n"
+            f"• <b>US 10Y Yield (DGS10):</b> {mkt['tnx']['price']:.2f}% ({mkt['tnx']['chg']:+.2f})\n\n"
+            f"<b>2. INSTITUTIONAL RATIOS</b>\n"
+            f"• <b>Gold/Silver Ratio (XAU/XAG):</b> {gs_ratio:.2f}x\n"
+            f"  <i>→ {gs_note}</i>\n"
+            f"• <b>Gold/Oil Ratio:</b> {go_ratio:.1f} barrels/oz\n\n"
+            f"<b>3. CROSS-ASSET REGIME</b>\n"
+            f"• {macro_pulse}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        await status_msg.edit_text(report, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logging.exception("Error in /correlations command")
+        await status_msg.edit_text(f"⚠️ Error calculating correlations: {html.escape(str(e))}")
+
 
 async def levels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("⏳ Computing Gold ATR Volatility & Intraday Pivot Levels...")
     try:
-        df = yf.Ticker("GC=F").history(period="1mo", interval="1d")
+        df = await asyncio.to_thread(lambda: yf.Ticker("GC=F").history(period="1mo", interval="1d").dropna(subset=["High", "Low", "Close"]))
         if df.empty or len(df) < 15:
             raise ValueError("Insufficient historical bars for GC=F")
 
-        # Calculate 14-day ATR
         high_low = df["High"] - df["Low"]
         high_close = (df["High"] - df["Close"].shift()).abs()
         low_close = (df["Low"] - df["Close"].shift()).abs()
         tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         atr_14 = float(tr.rolling(14).mean().iloc[-1])
 
-        # Previous session HLC for Standard Floor Pivots
         prev_bar = df.iloc[-2]
         h = float(prev_bar["High"])
         l = float(prev_bar["Low"])
@@ -625,7 +632,21 @@ async def levels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(report, parse_mode=ParseMode.HTML)
     except Exception as e:
         logging.exception("Error in /levels command")
-        await status_msg.edit_text(f"⚠️ Error computing levels: {e}")
+        await status_msg.edit_text(f"⚠️ Error computing levels: {html.escape(str(e))}")
+
+
+async def upgraded_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    welcome = (
+        "<b>🏛 Apex Gold Intel Bot (MarketSentinelBot)</b>\n\n"
+        "<b>Commands:</b>\n"
+        "• /brief — Full Institutional Brief (FRED, Shanghai Premium, XAU Crosses, MAs & Cheat Codes)\n"
+        "• /news — Live Gold, Silver, Bond Yields & Crude Oil Headlines + Sentiment\n"
+        "• /correlations — Gold/Silver Ratio, Crude Oil & 10Y Yield Radar\n"
+        "• /levels — Daily Floor Pivots (P, R1, R2, S1, S2) & 14-Day ATR Bands\n"
+        "• /set_sge <code>630.50</code> — Set live Shanghai Au99.99 price in RMB/g\n"
+        "• /curriculum — View Day 1 to Day 30 Masterclass Reference Matrix"
+    )
+    await update.message.reply_text(welcome, parse_mode=ParseMode.HTML)
 
 
 def auto_news_alert_worker():
@@ -662,17 +683,29 @@ def auto_news_alert_worker():
                         logging.error(f"Failed to send auto news alert: {e}")
 
 
-# Hook all new commands into the bot via run_polling (avoids __slots__ AttributeError)
-_original_run_polling = Application.run_polling
+def run_upgraded_bot():
+    threading.Thread(target=start_health_server, daemon=True).start()
+    threading.Thread(target=auto_news_alert_worker, daemon=True).start()
 
-def _patched_run_polling(self, *args, **kwargs):
-    self.add_handler(CommandHandler("news", news_command))
-    self.add_handler(CommandHandler("correlations", correlations_command))
-    self.add_handler(CommandHandler("levels", levels_command))
-    return _original_run_polling(self, *args, **kwargs)
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
 
-Application.run_polling = _patched_run_polling
+    app.add_handler(CommandHandler("start", upgraded_start_command))
+    app.add_handler(CommandHandler("brief", brief_command))
+    app.add_handler(CommandHandler("set_sge", set_sge_command))
+    app.add_handler(CommandHandler("curriculum", curriculum_command))
+    app.add_handler(CommandHandler("news", news_command))
+    app.add_handler(CommandHandler("correlations", correlations_command))
+    app.add_handler(CommandHandler("levels", levels_command))
+
+    print("MarketSentinelBot (Upgraded) is running... Open Telegram and send /start!")
+    app.run_polling(drop_pending_updates=True)
+
 
 if __name__ == "__main__":
-    threading.Thread(target=auto_news_alert_worker, daemon=True).start()
-    main()
+    run_upgraded_bot()
+    
