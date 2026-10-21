@@ -542,18 +542,32 @@ async def correlations_command(update: Update, context: ContextTypes.DEFAULT_TYP
         symbols = {
             "gold": "GC=F",
             "silver": "SI=F",
-            "oil": "CL=F",
-            "tnx": "^TNX"
+            "oil": "CL=F"
         }
         mkt = {}
         for k, sym in symbols.items():
             df = yf.Ticker(sym).history(period="1mo", interval="1d")
+            df = df.dropna(subset=["Close"])
             if df.empty or len(df) < 2:
-                raise ValueError(f"Missing data for {sym}")
+                raise ValueError(f"Missing market data for {sym}")
             last = float(df["Close"].iloc[-1])
             prev = float(df["Close"].iloc[-2])
             chg = ((last - prev) / prev) * 100
             mkt[k] = {"price": last, "chg": chg}
+
+        # Fetch 10Y Yield with automatic fallback to your FRED API (DGS10)
+        tnx_df = yf.Ticker("^TNX").history(period="1mo", interval="1d")
+        tnx_df = tnx_df.dropna(subset=["Close"])
+        if not tnx_df.empty and len(tnx_df) >= 2:
+            tnx_last = float(tnx_df["Close"].iloc[-1])
+            tnx_prev = float(tnx_df["Close"].iloc[-2])
+            tnx_chg = ((tnx_last - tnx_prev) / tnx_prev) * 100
+        else:
+            fred_10y = fetch_fred_series("DGS10")
+            tnx_last = fred_10y["latest"]
+            tnx_chg = fred_10y["change"]
+
+        mkt["tnx"] = {"price": tnx_last, "chg": tnx_chg}
 
         gs_ratio = mkt["gold"]["price"] / mkt["silver"]["price"]
         go_ratio = mkt["gold"]["price"] / mkt["oil"]["price"]
@@ -583,7 +597,7 @@ async def correlations_command(update: Update, context: ContextTypes.DEFAULT_TYP
             f"• <b>Gold (GC=F):</b> ${mkt['gold']['price']:,.2f} ({mkt['gold']['chg']:+.2f}%)\n"
             f"• <b>Silver (SI=F):</b> ${mkt['silver']['price']:,.2f} ({mkt['silver']['chg']:+.2f}%)\n"
             f"• <b>WTI Crude Oil (CL=F):</b> ${mkt['oil']['price']:,.2f} ({mkt['oil']['chg']:+.2f}%)\n"
-            f"• <b>US 10Y Yield (^TNX):</b> {mkt['tnx']['price']:.2f}% ({mkt['tnx']['chg']:+.2f}%)\n\n"
+            f"• <b>US 10Y Yield:</b> {mkt['tnx']['price']:.2f}% ({mkt['tnx']['chg']:+.2f}%)\n\n"
             f"<b>2. INSTITUTIONAL RATIOS</b>\n"
             f"• <b>Gold/Silver Ratio (XAU/XAG):</b> {gs_ratio:.2f}x\n"
             f"  <i>→ {gs_note}</i>\n"
@@ -595,7 +609,7 @@ async def correlations_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await status_msg.edit_text(report, parse_mode=ParseMode.HTML)
     except Exception as e:
         logging.exception("Error in /correlations command")
-        await status_msg.edit_text(f"⚠️ Error calculating correlations: {e}")
+        await status_msg.edit_text(f"⚠️ Error calculating correlations: {html.escape(str(e))}")
 
 
 async def levels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
